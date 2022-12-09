@@ -64,6 +64,7 @@ def demo(args):
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', help="restore checkpoint")
     parser.add_argument('--path', help="dataset for evaluation")
