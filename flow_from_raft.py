@@ -15,6 +15,9 @@ from PIL import Image
 #import pickle
 #import seaborn as sns
 
+os.add_dll_directory("D://opencvgpu//opencv_build_310//bin")
+os.add_dll_directory("C://Program Files//NVIDIA GPU Computing Toolkit//CUDA//v11.8//bin")
+
 import cv2 as cv
 
 from matplotlib import pyplot as plt
@@ -56,8 +59,13 @@ class flow_source():
         total_frames = len(images)
         container = av.open(os.path.join(self.video_out_path,video_name), mode="w")
 
+        # -pix_fmt yuv444p
+
         img = Image.open(images[0])
-        stream = container.add_stream("h264", rate=fps)
+        stream = container.add_stream("libx264", rate=fps)
+        stream.options["crf"] = "0"
+
+        #stream.pix_fmt = "yuv444p"
         stream.width = img.width
         stream.height = img.height
 
@@ -77,6 +85,11 @@ class flow_source():
 
         logger.info("Done writing movie.")
 
+    def write_video_from_nvflow(self):
+
+        flow_frames_path = os.path.join(source.out_parent_dir, source.source_file_name, 'nvflow_frames')
+        self.write_video_from_frames(flow_frames_path, 'nvflow_flow.mp4')
+
     def write_video_from_deepflow(self):
 
         flow_frames_path = os.path.join(source.out_parent_dir, source.source_file_name, 'deepflow_frames')
@@ -86,6 +99,11 @@ class flow_source():
 
         flow_frames_path = os.path.join(source.out_parent_dir, source.source_file_name, 'raft_frames')
         self.write_video_from_frames(flow_frames_path, 'raft_flow.mp4')
+
+    def write_video_from_brox(self):
+
+        flow_frames_path = os.path.join(source.out_parent_dir, source.source_file_name, 'brox_flow_frames')
+        self.write_video_from_frames(flow_frames_path, 'brox_flow.mp4')
 
     def extract_frames(self):
 
@@ -105,6 +123,136 @@ class flow_source():
             frame.to_image().save(os.path.join(self.raw_frames_path,'{:06d}.png'.format(frame.index)))
 
         logger.info("Done extracting frames.")
+
+    def estimate_flow_with_brox(self):
+
+        logger.info("Estimating flow with brox...")
+
+        flow_frames_path = os.path.join(self.out_parent_dir, self.source_file_name, 'brox_flow_frames')
+
+        if os.path.isdir(flow_frames_path) is False:
+            os.makedirs(flow_frames_path)
+
+        images = glob.glob(os.path.join(self.raw_frames_path, '*.png')) + \
+                 glob.glob(os.path.join(self.raw_frames_path, '*.jpg'))
+
+
+        images = natsorted(images, key=lambda y: y.lower())  # sort alphanumeric in ascending order
+
+        clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        index = 0
+
+        # (alpha ,gamma ,scale ,inner_iterations ,outer_iterations ,solver_iterations)
+        brox = cv.cuda_BroxOpticalFlow.create(alpha=0.05, gamma = 50.0, scale_factor=1.0)
+
+        # imsize = cv.imread(images[0]).size
+
+        image1_gpu = cv.cuda_GpuMat()
+        image2_gpu = cv.cuda_GpuMat()
+
+        # tempImg = cv.cvtColor(cv.imread(images[0]), cv.COLOR_BGR2GRAY)
+        # image1_gpu.upload(tempImg)
+        # flow = cv.cuda_GpuMat(image1_gpu.size(), cv.CV_32FC2)
+
+        for imfile1, imfile2 in zip(images[:-1], images[1:]):
+
+            image1 = cv.imread(imfile1)
+            image2 = cv.imread(imfile2)
+
+            image1_gray = cv.cvtColor(image1, cv.COLOR_BGR2GRAY).astype("float32")/255.0
+            image2_gray = cv.cvtColor(image2, cv.COLOR_BGR2GRAY).astype("float32")/255.0
+
+            # image1_gray = image1.astype("float32") / 255.0
+            # image2_gray = image1.astype("float32") / 255.0
+
+            image1_gpu.upload(image1_gray)
+            image2_gpu.upload(image2_gray)
+
+            # Image.convertTo(Image, CV_32FC1, 1.0 / 255.0);
+            flow = cv.cuda_GpuMat(image1_gpu.size(), cv.CV_32FC2)
+
+            gpu_flow = brox.calc(image1_gpu, image2_gpu, flow)
+
+            flow = gpu_flow.download()
+
+            gpu_flow_x = cv.cuda_GpuMat(gpu_flow.size(), cv.CV_32FC2)
+            gpu_flow_y = cv.cuda_GpuMat(gpu_flow.size(), cv.CV_32FC2)
+            cv.cuda.split(gpu_flow, [gpu_flow_x, gpu_flow_y], cv.cuda.Stream_Null())
+
+            gpu_magnitude, gpu_angle = cv.cuda.cartToPolar(gpu_flow_x, gpu_flow_y, angleInDegrees=False)
+
+            # set value to normalized magnitude from 0 to 1
+            gpu_v = cv.cuda.normalize(gpu_magnitude, 0.0, 255.0, cv.NORM_MINMAX, -1)
+
+            res = gpu_v.download()
+
+            img_flow_as_vectors = self.overlay_flow_as_arrows(image1, flow, 15)
+
+            cv.imwrite(str(os.path.join(flow_frames_path, 'frame-{}.png'.format(index))), img_flow_as_vectors)
+            index += 1
+
+        logger.info("Done estimating flow with deepflow.")
+
+
+
+    def estimate_flow_with_nvflow(self):
+
+        logger.info("Estimating flow with nvflow...")
+
+        flow_frames_path = os.path.join(self.out_parent_dir, self.source_file_name, 'nvflow_frames')
+
+        if os.path.isdir(flow_frames_path) is False:
+            os.makedirs(flow_frames_path)
+
+        images = glob.glob(os.path.join(self.raw_frames_path, '*.png')) + \
+                 glob.glob(os.path.join(self.raw_frames_path, '*.jpg'))
+
+
+        images = natsorted(images, key=lambda y: y.lower())  # sort alphanumeric in ascending order
+
+        clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        index = 0
+
+
+        image1_gray = cv.cvtColor(cv.imread(images[0]), cv.COLOR_BGR2GRAY)
+
+        nvof = cv.cuda_NvidiaOpticalFlow_2_0.create((image1_gray.shape[1], image1_gray.shape[0]),
+                                                    outputGridSize=1,  # 1,2, 4.  Higher is less accurate.
+                                                    enableCostBuffer=True,
+                                                    enableTemporalHints=True, )
+
+        for imfile1, imfile2 in zip(images[:-1], images[1:]):
+
+            image1 = cv.imread(imfile1)
+            image2 = cv.imread(imfile2)
+
+            image1_gray = cv.cvtColor(image1, cv.COLOR_BGR2GRAY)
+            image2_gray = cv.cvtColor(image2, cv.COLOR_BGR2GRAY)
+
+            image1_gray = clahe.apply(image1_gray)
+            image2_gray = clahe.apply(image2_gray)
+
+            flowTuples = nvof.calc(image1_gray, image2_gray, None)
+
+            # flowOut = cv.cuda_GpuMat((np.shape(flowTuples[0])[1],np.shape(flowTuples[0])[0]), type=cv.CV_32FC3)
+            # flowOut = np.zeros(np.shape(flowTuples[0]))
+
+            flow = nvof.convertToFloat(flowTuples[0], np.array(np.shape(flowTuples[0])))
+            #flow = nvof.upSampler(flow[0], image1_gray.shape[1], image1_gray.shape[0], nvof.getGridSize(), None)
+
+            # cv2.writeOpticalFlow('OpticalFlow.flo', flowUpSampled)
+            nvof.collectGarbage()
+
+            # flow = df.calc(image1_gray, image2_gray, flow=None)
+            img_flow_as_vectors = self.overlay_flow_as_arrows(image1, flow, 15)
+
+            cv.imwrite(str(os.path.join(flow_frames_path, 'frame-{}.png'.format(index))), img_flow_as_vectors)
+            index += 1
+
+        logger.info("Done estimating flow with deepflow.")
+
 
     def estimate_flow_with_deepflow(self):
 
@@ -141,6 +289,10 @@ class flow_source():
 
                 flow = df.calc(image1_gray, image2_gray, flow=None)
                 img_flow_as_vectors = self.overlay_flow_as_arrows(image1, flow, 15)
+
+                # gpu_magnitude, gpu_angle = cv.cuda.cartToPolar(gpu_flow_x, gpu_flow_y, angleInDegrees=False)
+                # gpu_v = cv.cuda.normalize(gpu_magnitude, 0.0, 255.0, cv.NORM_MINMAX, -1)
+                # res = gpu_v.download()
 
                 cv.imwrite(str(os.path.join(flow_frames_path, 'frame-{}.png'.format(index))), img_flow_as_vectors)
                 index+=1
@@ -286,7 +438,26 @@ class flow_source():
 
         return img
 
-
+   
+    # https: // learnopencv.com / getting - started - opencv - cuda - module /
+    # # convert from cartesian to polar coordinates to get magnitude and angle
+    # magnitude, angle = cv2.cartToPolar(
+    #     flow[..., 0], flow[..., 1], angleInDegrees=True,
+    # )
+    #
+    # # set hue according to the angle of optical flow
+    # hsv[..., 0] = angle * ((1 / 360.0) * (180 / 255.0))
+    #
+    # # set value according to the normalized magnitude of optical flow
+    # hsv[..., 2] = cv2.normalize(
+    #     magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1,
+    # )
+    #
+    # # multiply each pixel value to 255
+    # hsv_8u = np.uint8(hsv * 255.0)
+    #
+    # # convert hsv to bgr
+    # bgr = cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
 
 if __name__ == "__main__":
     #a_file_path = os.path.join("videos/", "flowformer.mp4")
@@ -298,7 +469,11 @@ if __name__ == "__main__":
     #source.estimate_flow_with_raft()
     #source.write_video_from_raft()
 
-    source.estimate_flow_with_deepflow()
-    source.write_video_from_deepflow()
+    #source.estimate_flow_with_deepflow()
 
+    source.estimate_flow_with_nvflow()
+    source.write_video_from_nvflow()
+
+    # source.estimate_flow_with_brox()
+    # source.write_video_from_brox()
 
