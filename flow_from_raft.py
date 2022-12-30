@@ -461,9 +461,12 @@ class flow_source():
 
 if __name__ == "__main__":
     #a_file_path = os.path.join("videos/", "flowformer.mp4")
-    a_file_path = os.path.join("videos/", "optic_flow_snippet.mp4")
+    #a_file_path = os.path.join("videos/", "optic_flow_snippet.mp4")
     #a_file_path = os.path.join("videos/", "demo_frames.mp4")
+    a_file_path = os.path.join("videos/", "1280_960_30Hz.mp4")
+
     source = flow_source(a_file_path)
+
     #source.extract_frames()
 
     #source.estimate_flow_with_raft()

@@ -19,10 +19,13 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 logger.setLevel(logging.DEBUG)
 
+import pickle
+from pathlib import Path
 
 class flow_source():
 
     def __init__(self, file_path, out_parent_dir="frames_out"):
+
         self.file_path = file_path
         self.source_file_name = os.path.split(file_path)[-1].split('.')[0]
         self.source_file_suffix = os.path.split(file_path)[-1].split('.')[1]
@@ -31,8 +34,32 @@ class flow_source():
         self.raw_frames_path = os.path.join(out_parent_dir, self.source_file_name, 'raw')
         self.video_out_path = os.path.join(out_parent_dir, self.source_file_name, 'videos')
 
+    def view_mag_histogram(self, video_out_name):
 
-    def deepflow_cuda(self, video_out_name, visualize_as="rbg"):
+        pickle_loc = os.path.join(self.video_out_path, video_out_name.split('.')[0] + '_mag.pickle')
+        pickle_file = open(pickle_loc, 'rb')
+        mag_dict = pickle.load(pickle_file)
+
+        mag_values = mag_dict['values']
+        bins = mag_dict['bins']
+
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        # ax.bar(bins[:-1], mag_values, width = .75 * (bins[1]-bins[0]))
+        ax.bar(bins[:-1], np.cumsum(mag_values) / sum(mag_values) , width = .75 * (bins[1]-bins[0]))
+
+        # tidy up the figure
+        ax.grid(True)
+
+        ax.set_title('flow magnitude')
+        ax.set_xlabel('value')
+        ax.set_ylabel('likelihood')
+
+        plt.savefig( os.path.join(self.video_out_path, video_out_name.split('.')[0] + '_mag.jpg') )
+
+
+    def apply_deepflow(self, video_out_name, visualize_as="hsv", hist_params = (100, 0,40)):
 
         container_in = av.open(self.file_path)
         average_fps = container_in.streams.video[0].average_rate
@@ -43,9 +70,8 @@ class flow_source():
             os.makedirs(self.video_out_path)
 
         container_out = av.open(os.path.join(self.video_out_path, video_out_name), mode="w")
-
         stream = container_out.add_stream("libx264", rate=average_fps)
-        stream.options["crf"] = "0"
+        stream.options["crf"] = "15"
 
         # this_frame = container_in.decode(video=0)
 
@@ -56,10 +82,11 @@ class flow_source():
 
         idx = 0
         for frame in container_in.decode(video=0):
-
             if(idx > 0):
                 frame = frame.to_ndarray(format='bgr24')
+
             else:
+
                 stream.width = frame.width
                 stream.height = frame.height
 
@@ -71,24 +98,39 @@ class flow_source():
             image1_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
 
-            # image1_gray = clahe.apply(image1_gray)
-            # image2_gray = clahe.apply(image2_gray)
-
             flow = df.calc(image1_gray, image2_gray, flow=None)
 
             frameout = []
+
             if visualize_as == "vectors":
                 vector_flow = self.visualize_flow_as_vectors(frame, flow, 15)
                 frameout = av.VideoFrame.from_ndarray(vector_flow, format='bgr24')
-            elif visualize_as == "rbg":
-                rbg_flow = self.visualize_flow_as_rgb(image1_gray, flow)
-                frameout = av.VideoFrame.from_ndarray(rbg_flow, format='bgr24')
+
+            elif visualize_as == "hsv":
+
+                magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
+                hsv_flow = self.visualize_flow_as_hsv(magnitude, angle)
+
+                combined_image = cv2.addWeighted(cv2.cvtColor(image1_gray, cv2.COLOR_GRAY2BGR), 0.1, hsv_flow, 0.9, 0)
+                frameout = av.VideoFrame.from_ndarray(combined_image, format='bgr24')
+
+                mag_hist = np.histogram(magnitude, hist_params[0], (hist_params[1], hist_params[2]))
+
+                if idx > 1 :
+                    cumulative_mag_hist = np.divide(np.sum( [ np.multiply((idx-1), cumulative_mag_hist), mag_hist[0] ], axis = 0), idx-1)
+
+                else:
+                    cumulative_mag_hist = mag_hist[0]
+
+
             else:
                 logger.exception('visualize_as string not supported')
 
             # for packet in stream.encode(img_flow_as_vectors):
             for packet in stream.encode(frameout):
                 container_out.mux(packet)
+
+
 
             prev_frame = frame
             idx += 1
@@ -100,15 +142,22 @@ class flow_source():
         # Close the file
         container_out.close()
 
-    def visualize_flow_as_rgb(self, frame, flow):
+        if( visualize_as == "hsv"):
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            dbfile = open(os.path.join(self.video_out_path, video_out_name.split('.')[0] + '_mag.pickle'), 'wb')
+            pickle.dump( {"values": cumulative_mag_hist, "bins": mag_hist[1]}, dbfile)
+            dbfile.close()
+
+
+
+    def visualize_flow_as_hsv(self, magnitude, angle, normalizing_constant = 30.0):
 
         # convert from cartesian to polar coordinates to get magnitude and angle
-        magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
+        # magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
 
         # create hsv output for optical flow
-        hsv = np.zeros_like(frame, np.float32)
+        # (480, 640, 3)
+        hsv = np.zeros([np.shape(magnitude)[0], np.shape(magnitude)[1], 3], np.float32)
 
         # set hue according to the angle of optical flow
         hsv[..., 0] = angle * ((1 / 360.0) * (180 / 255.0))
@@ -117,7 +166,8 @@ class flow_source():
         hsv[..., 1] = 1.0
 
         # set value according to the normalized magnitude of optical flow
-        hsv[..., 2] = cv2.normalize(magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1)
+        # hsv[..., 2] = cv2.normalize(magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1)
+        hsv[..., 2] = np.clip(magnitude / normalizing_constant, 0, 1)
 
         # multiply each pixel value to 255
         hsv_8u = np.uint8(hsv * 255.0)
@@ -125,9 +175,8 @@ class flow_source():
         # convert hsv to rgb
         # rgb = cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
 
-        combined = cv2.addWeighted(frame, 0.05, cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR), 0.95, 0)
-
-        return combined
+        # combined = cv2.addWeighted(frame, 0.05, cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR), 0.95, 0)
+        return cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
 
     def visualize_flow_as_vectors(self, Image, Flow, Divisor):
 
@@ -197,6 +246,11 @@ class flow_source():
 
 if __name__ == "__main__":
 
-    a_file_path = os.path.join("videos/", "optic_flow_snippet.mp4")
+    a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
     source = flow_source(a_file_path)
-    source.deepflow_cuda('deepflow_out.mp4')
+    source.apply_deepflow('640_480_60Hz_small_deepflow.mp4')
+    source.view_mag_histogram('640_480_60Hz_small_deepflow.mp4')
+
+    # a_file_path = os.path.join("videos/", "1280_960_30Hz.mp4")
+    # source = flow_source(a_file_path)
+    # source.apply_deepflow('1280_960_30Hz_deepflow.mp4')
