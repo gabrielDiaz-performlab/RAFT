@@ -20,7 +20,8 @@ logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 logger.setLevel(logging.DEBUG)
 
 import pickle
-from pathlib import Path
+from tqdm import tqdm
+
 
 class flow_source():
 
@@ -59,10 +60,11 @@ class flow_source():
         plt.savefig( os.path.join(self.video_out_path, video_out_name.split('.')[0] + '_mag.jpg') )
 
 
-    def apply_deepflow(self, video_out_name, visualize_as="hsv", hist_params = (100, 0,40)):
+    def calculate_flow(self, video_out_name, algorithm = "deepflow", visualize_as="hsv_stacked", hist_params = (100, 0,40), lower_mag_threshold = False, upper_mag_threshold = False):
 
         container_in = av.open(self.file_path)
         average_fps = container_in.streams.video[0].average_rate
+        num_frames = container_in.streams.video[0].frames
 
         ##############################
         # prepare video out
@@ -76,12 +78,26 @@ class flow_source():
         # this_frame = container_in.decode(video=0)
 
         ##############################
+        use_cuda = False
 
-        # clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        df = cv2.optflow.createOptFlow_DeepFlow()
+        if algorithm == "deepflow":
+            flow_algo = cv2.optflow.createOptFlow_DeepFlow()
+
+        elif algorithm == "tvl1":
+
+            flow_algo = cv2.cuda_OpticalFlowDual_TVL1.create()
+            # flow_algo.setLambda(0.1) # default 0.15. smaller = smoother output.
+
+            use_cuda = True
+            image1_gpu = cv2.cuda_GpuMat()
+            image2_gpu = cv2.cuda_GpuMat()
+
+        else:
+            logger.error('Optical flow algorithm not yet implemented.')
 
         idx = 0
-        for frame in container_in.decode(video=0):
+        for frame in tqdm(container_in.decode(video=0), desc='Calculating flow', unit= 'frames',total = num_frames):
+
             if(idx > 0):
                 frame = frame.to_ndarray(format='bgr24')
 
@@ -95,10 +111,23 @@ class flow_source():
                 idx += 1
                 continue
 
-            image1_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+            if use_cuda:
 
-            flow = df.calc(image1_gray, image2_gray, flow=None)
+                image1_gpu.upload(frame)
+                image2_gpu.upload(prev_frame)
+                image1_gray = cv2.cuda.cvtColor(image1_gpu, cv2.COLOR_BGR2GRAY)
+                image2_gray = cv2.cuda.cvtColor(image2_gpu, cv2.COLOR_BGR2GRAY)
+
+                flow = flow_algo.calc(image1_gray, image2_gray, flow=None)
+
+                image1_gray = image1_gray.download()
+                flow = flow.download()
+
+            else:
+                image1_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+
+                flow = flow_algo.calc(image1_gray, image2_gray, flow=None)
 
             frameout = []
 
@@ -106,19 +135,24 @@ class flow_source():
                 vector_flow = self.visualize_flow_as_vectors(frame, flow, 15)
                 frameout = av.VideoFrame.from_ndarray(vector_flow, format='bgr24')
 
-            elif visualize_as == "hsv":
+            elif visualize_as == "hsv_overlay" or visualize_as == "hsv_stacked":
 
                 magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
-                hsv_flow = self.visualize_flow_as_hsv(magnitude, angle)
+                hsv_flow = self.visualize_flow_as_hsv(magnitude, angle, lower_mag_threshold, upper_mag_threshold)
 
-                combined_image = cv2.addWeighted(cv2.cvtColor(image1_gray, cv2.COLOR_GRAY2BGR), 0.1, hsv_flow, 0.9, 0)
+                if visualize_as == "hsv_overlay":
+                    combined_image = cv2.addWeighted(cv2.cvtColor(image1_gray, cv2.COLOR_GRAY2BGR), 0.1, hsv_flow, 0.9, 0)
+                elif visualize_as == "hsv_stacked":
+                    combined_image = np.concatenate((frame, hsv_flow), axis=0)
+                else:
+                    logger.error('Visualization method not recognized.')
+
                 frameout = av.VideoFrame.from_ndarray(combined_image, format='bgr24')
 
                 mag_hist = np.histogram(magnitude, hist_params[0], (hist_params[1], hist_params[2]))
 
                 if idx > 1 :
                     cumulative_mag_hist = np.divide(np.sum( [ np.multiply((idx-1), cumulative_mag_hist), mag_hist[0] ], axis = 0), idx-1)
-
                 else:
                     cumulative_mag_hist = mag_hist[0]
 
@@ -142,7 +176,7 @@ class flow_source():
         # Close the file
         container_out.close()
 
-        if( visualize_as == "hsv"):
+        if visualize_as == "hsv_overlay" or visualize_as == "hsv_stacked":
 
             dbfile = open(os.path.join(self.video_out_path, video_out_name.split('.')[0] + '_mag.pickle'), 'wb')
             pickle.dump( {"values": cumulative_mag_hist, "bins": mag_hist[1]}, dbfile)
@@ -150,7 +184,7 @@ class flow_source():
 
 
 
-    def visualize_flow_as_hsv(self, magnitude, angle, normalizing_constant = 30.0):
+    def visualize_flow_as_hsv(self, magnitude, angle, lower_mag_threshold = False, upper_mag_threshold = False):
 
         # convert from cartesian to polar coordinates to get magnitude and angle
         # magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
@@ -165,9 +199,14 @@ class flow_source():
         # set saturation to 1
         hsv[..., 1] = 1.0
 
-        # set value according to the normalized magnitude of optical flow
-        # hsv[..., 2] = cv2.normalize(magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1)
-        hsv[..., 2] = np.clip(magnitude / normalizing_constant, 0, 1)
+        if lower_mag_threshold:
+            magnitude[magnitude<lower_mag_threshold] = 0
+
+        if upper_mag_threshold:
+            magnitude[magnitude>upper_mag_threshold] = 0
+            hsv[..., 2] = np.clip(magnitude / upper_mag_threshold, 0, 1)
+        else:
+            hsv[..., 2] = cv2.normalize(magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1)
 
         # multiply each pixel value to 255
         hsv_8u = np.uint8(hsv * 255.0)
@@ -246,11 +285,23 @@ class flow_source():
 
 if __name__ == "__main__":
 
-    a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
-    source = flow_source(a_file_path)
-    source.apply_deepflow('640_480_60Hz_small_deepflow.mp4')
-    source.view_mag_histogram('640_480_60Hz_small_deepflow.mp4')
+    # a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
+    # source = flow_source(a_file_path)
+    # source.calculate_flow('640_480_60Hz_small_deepflow.mp4', lower_mag_threshold = 2, upper_mag_threshold = 40)
+    # source.view_mag_histogram('640_480_60Hz_small_deepflow.mp4')
 
     # a_file_path = os.path.join("videos/", "1280_960_30Hz.mp4")
     # source = flow_source(a_file_path)
-    # source.apply_deepflow('1280_960_30Hz_deepflow.mp4')
+    # source.(('1280_960_30Hz_deepflow.mp4')
+
+    # a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
+    # source = flow_source(a_file_path)
+    # source.calculate_flow('640_480_60Hz_small_tvl1.mp4',algorithm='tvl1', lower_mag_threshold = 0.5, upper_mag_threshold = 20)
+    # source.view_mag_histogram('640_480_60Hz_small_tvl1.mp4')
+
+    a_file_path = os.path.join("videos/", "1280_960_30Hz.mp4")
+    source = flow_source(a_file_path)
+    source.calculate_flow('1280_960_30Hz_tvl1.mp4',algorithm='tvl1', lower_mag_threshold = 0.5, upper_mag_threshold = 15)
+    source.view_mag_histogram('1280_960_30Hz_tvl1.mp4')
+
+
