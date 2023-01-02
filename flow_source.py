@@ -102,7 +102,7 @@ class flow_source():
         idx = 0
         for frame in tqdm(container_in.decode(video=0), desc='Calculating flow', unit= 'frames',total = num_frames):
 
-            if(idx == 0):
+            if idx == 0:
 
                 stream.width = frame.width
                 stream.height = frame.height
@@ -138,6 +138,7 @@ class flow_source():
 
             # Convert flow to mag / angle
             magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
+            magnitude = self.apply_magnitude_thresholds(magnitude, lower_mag_threshold, upper_mag_threshold)
 
             if visualize_as == "vectors":
 
@@ -153,7 +154,7 @@ class flow_source():
 
             elif visualize_as == "hsv_overlay" or visualize_as == "hsv_stacked":
 
-                hsv_flow = self.visualize_flow_as_hsv(magnitude, angle, lower_mag_threshold, upper_mag_threshold)
+                hsv_flow = self.visualize_flow_as_hsv(magnitude, angle, upper_mag_threshold)
 
                 if visualize_as == "hsv_overlay":
                     combined_image = cv2.addWeighted(cv2.cvtColor(image1_gray, cv2.COLOR_GRAY2BGR), 0.1, hsv_flow, 0.9, 0)
@@ -163,7 +164,6 @@ class flow_source():
                     logger.error('Visualization method not recognized.')
 
                 frameout = av.VideoFrame.from_ndarray(combined_image, format='bgr24')
-
 
             else:
                 logger.exception('visualize_as string not supported')
@@ -196,7 +196,20 @@ class flow_source():
         pickle.dump( {"values": cumulative_mag_hist, "bins": mag_hist[1]}, dbfile)
         dbfile.close()
 
-    def visualize_flow_as_hsv(self, magnitude, angle, lower_mag_threshold = False, upper_mag_threshold = False):
+    def apply_magnitude_thresholds(self, magnitude, lower_mag_threshold = False, upper_mag_threshold = False):
+
+        if lower_mag_threshold:
+            magnitude[magnitude<lower_mag_threshold] = 0
+
+        if upper_mag_threshold:
+            magnitude[magnitude>upper_mag_threshold] = upper_mag_threshold
+
+        return magnitude
+
+    def visualize_flow_as_hsv(self, magnitude, angle, upper_bound = False):
+        '''
+        Note that to perform well, this function really needs an upper_bound, which also acts as a normalizing term.
+        '''
 
         # convert from cartesian to polar coordinates to get magnitude and angle
         # magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1], angleInDegrees=True)
@@ -211,31 +224,72 @@ class flow_source():
         # set saturation to 1
         hsv[..., 1] = 1.0
 
-        if lower_mag_threshold:
-            magnitude[magnitude<lower_mag_threshold] = 0
+        # clip to range
+        hsv[..., 2] = np.clip(magnitude / upper_bound, 0, 1)
 
-        if upper_mag_threshold:
-            magnitude[magnitude>upper_mag_threshold] = 0
-            hsv[..., 2] = np.clip(magnitude / upper_mag_threshold, 0, 1)
+        # if lower_mag_threshold:
+        #     magnitude[magnitude<lower_mag_threshold] = 0
+
+        if upper_bound:
+            magnitude[magnitude > upper_bound] = upper_bound
+            hsv[..., 2] = np.clip(magnitude / upper_bound, 0, 1)
         else:
             hsv[..., 2] = cv2.normalize(magnitude, None, 0.0, 1.0, cv2.NORM_MINMAX, -1)
 
         # multiply each pixel value to 255
         hsv_8u = np.uint8(hsv * 255.0)
 
-        # convert hsv to rgb
-        # rgb = cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
-
-        # combined = cv2.addWeighted(frame, 0.05, cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR), 0.95, 0)
         return cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
 
-    def visualize_flow_as_vectors(self, frame, magnitude, angle, divisor, lower_mag_threshold = False, upper_mag_threshold = False, magnitude_scalar = False):
+    def visualize_flow_as_vectors(self, frame, magnitude, angle, divisor, magnitude_scalar = False):
 
         '''Display image with a visualisation of a flow over the top.
         A divisor controls the density of the quiver plot.'''
+        #
+        # def arrowedLine(mask, pt1, pt2, color, thickness):
+        #
+        #     line_type = int(8)
+        #     shift = int(0)
+        #     tipLength = float(0.3)
+        #     pi = np.pi
+        #
+        #     pt1 = np.array(pt1)
+        #     pt2 = np.array(pt2)
+        #
+        #     pt1 = pt1.astype(float)
+        #     pt2 = pt2.astype(float)
+        #
+        #     ptsDiff = np.array([pt1[0] - pt2[0], pt1[1] - pt2[1]])
+        #     # Factor to normalize the size of the tip depending on the length of the arrow
+        #     tipSize = cv2.norm(ptsDiff) * tipLength
+        #
+        #     # Draw main line
+        #     mask = cv2.line(mask, (pt1[1].astype(int), pt1[0].astype(int)),
+        #                     (pt2[1].astype(int), pt2[0].astype(int)), color, thickness, line_type, shift)
+        #
+        #     # calculate line angle
+        #     angle = np.arctan2(pt1[1] - pt2[1], pt1[0] - pt2[0])
+        #
+        #     # draw first line of arrow
+        #     px = round(pt2[0] + tipSize * np.cos(angle + pi / 4))
+        #     py1 = round(pt2[1] + tipSize * np.sin(angle + pi / 4))
+        #     mask = cv2.line(mask, (int(py1), int(px)),
+        #                     (int(pt2[1]), int(pt2[0])), color, thickness, line_type, shift)
+        #
+        #     # draw second line of arrow
+        #     px = round(pt2[0] + tipSize * np.cos(angle - pi / 4))
+        #     py1 = round(pt2[1] + tipSize * np.sin(angle - pi / 4))
+        #     mask = cv2.line(mask, (int(py1), int(px)),
+        #                     (int(pt2[1]), int(pt2[0])), color, thickness, line_type, shift)
+        #
+        #     return mask
+
 
         # create a blank mask, on which lines will be drawn.
         mask = np.zeros([np.shape(magnitude)[0], np.shape(magnitude)[1], 3], np.uint8)
+
+        if magnitude_scalar:
+            magnitude = np.multiply(magnitude, magnitude_scalar)
 
         # (2, 480, 640)
         vector_x, vector_y = cv2.polarToCart(magnitude, angle, angleInDegrees=True)
@@ -249,7 +303,8 @@ class flow_source():
                 endpoint_x = int(origin_x + vector_x[origin_x, origin_y])
                 endpoint_y = int(origin_y + vector_y[origin_x, origin_y])
 
-                mask = cv2.arrowedLine(mask, (origin_y, origin_x), (endpoint_y, endpoint_x),  (0, 255, 255), 1)
+                mask = cv2.arrowedLine(mask, (origin_y, origin_x), (endpoint_y, endpoint_x),  color=(0, 0, 255), thickness = 1, tipLength = 0.35)
+                #mask = arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y), color=(0, 0, 255), thickness=1)
 
         return cv2.add(frame, mask)
 
@@ -266,10 +321,18 @@ if __name__ == "__main__":
     # source = flow_source(a_file_path)
     # source.(('1280_960_30Hz_deepflow.mp4')
 
+    # a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
+    # source = flow_source(a_file_path)
+    # source.calculate_flow('640_480_60Hz_small_tvl1_vectors.mp4',algorithm='tvl1',visualize_as="vectors", lower_mag_threshold = 0.5, upper_mag_threshold = 30)
+    # source.view_mag_histogram('640_480_60Hz_small_tvl1.mp4')
+
     a_file_path = os.path.join("videos/", "640_480_60Hz_small.mp4")
     source = flow_source(a_file_path)
-    source.calculate_flow('640_480_60Hz_small_tvl1_vectors.mp4',algorithm='tvl1',visualize_as="vectors", lower_mag_threshold = 0.5, upper_mag_threshold = 30)
-    source.view_mag_histogram('640_480_60Hz_small_tvl1_vectors.mp4')
+    video_out_filename = "640_480_60Hz_small_tvl1_hsv-stacked.mp4"
+    source.calculate_flow(video_out_filename, algorithm='tvl1', visualize_as="hsv_stacked",
+                          lower_mag_threshold=0.5, upper_mag_threshold=30)
+    source.view_mag_histogram(video_out_filename)
+
 
     # a_file_path = os.path.join("videos/", "640_480_60Hz.mp4")
     # source = flow_source(a_file_path)
