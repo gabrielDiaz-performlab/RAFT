@@ -1,4 +1,5 @@
 frames_out/*
+flow_out/*
 videos/*
 
 *.pyc
