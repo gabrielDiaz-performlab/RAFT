@@ -463,19 +463,19 @@ if __name__ == "__main__":
     #a_file_path = os.path.join("videos/", "flowformer.mp4")
     #a_file_path = os.path.join("videos/", "optic_flow_snippet.mp4")
     #a_file_path = os.path.join("videos/", "demo_frames.mp4")
-    a_file_path = os.path.join("videos/", "1280_960_30Hz.mp4")
+    a_file_path = os.path.join("videos/", "640_480_60Hz_highOF.mp4")
 
     source = flow_source(a_file_path)
 
-    #source.extract_frames()
+    source.extract_frames()
 
     #source.estimate_flow_with_raft()
     #source.write_video_from_raft()
 
     #source.estimate_flow_with_deepflow()
 
-    source.estimate_flow_with_nvflow()
-    source.write_video_from_nvflow()
+    source.estimate_flow_with_deepflow()
+    source.write_video_from_deepflow()
 
     # source.estimate_flow_with_brox()
     # source.write_video_from_brox()
