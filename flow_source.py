@@ -1,3 +1,5 @@
+# 2023 Gabriel J. Diaz @ RIT
+
 import os
 import sys
 import numpy as np
@@ -177,28 +179,40 @@ class flow_source():
 
         height = container_in.streams.video[0].height
         width = container_in.streams.video[0].width
-        use_cuda, flow_algo = self.create_flow_object(algorithm, (height,width))
+        use_cuda, flow_algo = self.create_flow_object(algorithm, (height, width))
 
         if use_cuda:
             image1_gpu = cv2.cuda_GpuMat()
             image2_gpu = cv2.cuda_GpuMat()
-            clahe = cv2.cuda.createCLAHE(clipLimit=2.0, tileGridSize=(5, 5))
+            clahe = cv2.cuda.createCLAHE(clipLimit=1.0, tileGridSize=(10, 10))
 
         else:
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(5, 5))
+            clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(10, 10))
 
 
-        idx = 0
         for raw_frame in tqdm(container_in.decode(video=0), desc="Generating " + video_out_name, unit= 'frames',total = num_frames):
 
-            if idx == 0:
+            if raw_frame.index == 0:
 
                 stream.width = raw_frame.width
 
-                if( visualize_as == "hsv_stacked"):
+                if visualize_as == "hsv_stacked":
                     stream.height = raw_frame.height * 2
                 else:
                     stream.height = raw_frame.height
+
+                prev_frame = raw_frame.to_ndarray(format='bgr24')
+                prev_frame = self.filter_frame(prev_frame)
+
+                if use_cuda:
+
+                    image2_gpu.upload(prev_frame)
+                    image2_gpu = cv2.cuda.cvtColor(image2_gpu, cv2.COLOR_BGR2GRAY)
+                    image2_gpu = clahe.apply(image2_gpu, cv2.cuda_Stream.Null())
+
+                else:
+                    image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+                    image2_gray = clahe.apply(image2_gray)
 
                 if save_input_images:
 
@@ -207,21 +221,20 @@ class flow_source():
 
                     raw_frame.to_image().save(os.path.join(self.raw_frames_out_path, '{:06d}.png'.format(raw_frame.index)))
 
-                prev_frame = raw_frame.to_ndarray(format='bgr24')
-
-                if use_cuda:
-                    image2_gpu.upload(prev_frame)
-                    image2_gpu = cv2.cuda.cvtColor(image2_gpu, cv2.COLOR_BGR2GRAY)
-                    image2_gpu = clahe.apply(image2_gpu, cv2.cuda_Stream.Null())
-                else:
-                    image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-                    image2_gray = clahe.apply(image2_gray)
-
-                idx += 1
                 continue
 
             else:
                 frame = raw_frame.to_ndarray(format='bgr24')
+                frame = self.filter_frame(frame)
+
+
+            if save_input_images:
+
+                if os.path.isdir(self.raw_frames_out_path) is False:
+                    os.makedirs(self.raw_frames_out_path)
+
+                raw_frame.to_image().save(os.path.join(self.raw_frames_out_path, '{:06d}.png'.format(raw_frame.index)))
+
 
             # Calculate flow.  If possible, use cuda.
             if use_cuda:
@@ -248,20 +261,20 @@ class flow_source():
                 if os.path.isdir(self.mid_frames_out_path) is False:
                     os.makedirs(self.mid_frames_out_path)
 
-                cv2.imwrite(str(os.path.join(self.mid_frames_out_path, '{:06d}.png'.format(idx))), image1_gray, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+                cv2.imwrite(str(os.path.join(self.mid_frames_out_path, '{:06d}.png'.format(raw_frame.index))), image1_gray, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
             # Convert flow to mag / angle
             magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             angle = np.pi + angle
 
             # Store the histogram of avg magnitudes
-            if idx == 1:
+            if raw_frame.index == 1:
                 mag_hist = np.histogram(magnitude, hist_params[0], (hist_params[1], hist_params[2]))
                 # Store the first flow histogram
                 cumulative_mag_hist = mag_hist[0]
             else:
                 # Calc cumulative avg flow magnitude by adding the first flow histogram in a weighted manner
-                cumulative_mag_hist = np.divide(np.sum([np.multiply((idx - 1), cumulative_mag_hist), mag_hist[0]], axis=0), idx - 1)
+                cumulative_mag_hist = np.divide(np.sum([np.multiply((raw_frame.index - 1), cumulative_mag_hist), mag_hist[0]], axis=0), raw_frame.index - 1)
 
             magnitude = self.apply_magnitude_thresholds_and_rescale(magnitude, lower_mag_threshold, upper_mag_threshold)
 
@@ -278,14 +291,11 @@ class flow_source():
                 if os.path.isdir(self.flow_frames_out_path) is False:
                     os.makedirs(self.flow_frames_out_path)
 
-                cv2.imwrite(str(os.path.join(self.flow_frames_out_path, 'frame-{}.png'.format(idx))), image_out )
+                cv2.imwrite(str(os.path.join(self.flow_frames_out_path, 'frame-{}.png'.format(raw_frame.index))), image_out )
 
             # Add packet to video
             for packet in stream.encode(frame_out):
                 container_out.mux(packet)
-
-
-            idx += 1
 
         # Flush stream
         for packet in stream.encode():
@@ -368,6 +378,16 @@ class flow_source():
 
         return cv2.addWeighted(frame, 0.5, mask, 0.5, 0)
 
+    def filter_frame(self,frame):
+
+        thresh1, frame = cv2.threshold(frame, 50, 255, cv2.THRESH_TOZERO)
+        frame = cv2.fastNlMeansDenoising(frame, None, 5, 7, 21)
+
+        # frame = cv2.bilateralFilter(frame,7, 40, 40)
+        # frame = cv2.GaussianBlur(frame, (3,3),0)
+
+        return frame
+
     def filter_magnitude(self,magnitude,median_size=5):
 
         magnitude = cv2.medianBlur(magnitude, median_size)
@@ -380,11 +400,8 @@ if __name__ == "__main__":
     # a_file_path = os.path.join("videos/", "Drive_640_480_60Hz_a.mp4")
     a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
 
-
-
     # a_file_path = os.path.join("videos/", "HeadingFixed-HD.mp4")
     # a_file_path = os.path.join("videos/", "test_optic_flow.mp4")
-
 
     source = flow_source(a_file_path)
     # source.calculate_flow(algorithm='tvl1',visualize_as="vectors",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = 5)
@@ -392,8 +409,8 @@ if __name__ == "__main__":
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=2, upper_mag_threshold=40, vector_scalar=3)
 
-    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=1, upper_mag_threshold=40,
-                          vector_scalar=3, save_midpoint_images=True)
+    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=1, upper_mag_threshold=20,
+                          vector_scalar=3, save_input_images=False, save_midpoint_images=False)
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_overlay", lower_mag_threshold=2, upper_mag_threshold=40,
     #                       fps=15, vector_scalar=3)
