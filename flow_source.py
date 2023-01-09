@@ -115,11 +115,11 @@ class flow_source():
 
         return use_cuda, flow_algo
 
-    def convert_flow_to_frame(self, frame, magnitude, angle, visualize_as, upper_mag_threshold, image_1_gray = None, vector_scalar = 1):
+    def convert_flow_to_frame(self, frame, magnitude, angle, visualize_as, upper_mag_threshold, mask = None, image_1_gray = None, vector_scalar = 1):
 
         if visualize_as == "vectors":
 
-            image_out = self.visualize_flow_as_vectors(frame, magnitude, angle, 15, vector_scalar = vector_scalar)  # , magnitude_scalar=-1)
+            image_out = self.visualize_flow_as_vectors(frame, magnitude, angle, 10, vector_scalar = vector_scalar)  # , magnitude_scalar=-1)
             frame_out = av.VideoFrame.from_ndarray(image_out, format='bgr24')
 
         elif visualize_as == "hsv_overlay" or visualize_as == "hsv_stacked":
@@ -189,6 +189,7 @@ class flow_source():
         else:
             clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(10, 10))
 
+        background_subtractor = cv2.createBackgroundSubtractorKNN()
 
         for raw_frame in tqdm(container_in.decode(video=0), desc="Generating " + video_out_name, unit= 'frames',total = num_frames):
 
@@ -203,6 +204,8 @@ class flow_source():
 
                 prev_frame = raw_frame.to_ndarray(format='bgr24')
                 prev_frame = self.filter_frame(prev_frame)
+
+                foreground_mask = background_subtractor.apply(prev_frame)
 
                 if use_cuda:
 
@@ -226,7 +229,7 @@ class flow_source():
             else:
                 frame = raw_frame.to_ndarray(format='bgr24')
                 frame = self.filter_frame(frame)
-
+                foreground_mask = background_subtractor.apply(frame)
 
             if save_input_images:
 
@@ -266,6 +269,8 @@ class flow_source():
             # Convert flow to mag / angle
             magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             angle = np.pi + angle
+
+            magnitude = self.filter_magnitude(magnitude,foreground_mask)
 
             # Store the histogram of avg magnitudes
             if raw_frame.index == 1:
@@ -360,12 +365,36 @@ class flow_source():
 
         if vector_scalar != 1 & vector_scalar != False:
             magnitude = np.multiply(magnitude, vector_scalar)
+        #
+        # # create a blank mask, on which lines will be drawn.
+        # mask = np.zeros([np.shape(magnitude)[0], np.shape(magnitude)[1], 3], np.uint8)
+        #
+        # if vector_scalar != 1 & vector_scalar != False:
+        #     magnitude = np.multiply(magnitude, vector_scalar)
+        #
+        # divisor = 20
+        # arrow_spacing = int(np.shape(magnitude)[0] / divisor)
+        # arrow_x_locs = np.array(np.linspace(arrow_spacing / 2, np.shape(magnitude)[0] - arrow_spacing / 2.0,
+        #                                     int(np.shape(magnitude)[0] / divisor) - 1), dtype=np.int32)
+        # vector_x, vector_y = cv2.polarToCart(magnitude, angle)
+        #
+        # for r in arrow_x_locs:
+        #     for c in np.where(magnitude[r, :] > np.median(magnitude) * 1.5)[0]:
+        #         origin_x = c
+        #         origin_y = r
+        #
+        #         endpoint_x = int(origin_x + vector_x[origin_y, origin_x])
+        #         endpoint_y = int(origin_y + vector_y[origin_y, origin_x])
+        #
+        #         mask = cv2.arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y), color=(0, 0, 255),
+        #                                thickness=1, tipLength=0.35)
+        #
 
-        # (2, 480, 640)
         vector_x, vector_y = cv2.polarToCart(magnitude, angle)
 
         for r in range(1, int(np.shape(magnitude)[0] / divisor)):
             for c in range(1, int(np.shape(magnitude)[1] / divisor)):
+
 
                 origin_x = c * divisor
                 origin_y = r * divisor
@@ -374,42 +403,43 @@ class flow_source():
                 endpoint_y = int(origin_y + vector_y[origin_y, origin_x])
 
                 mask = cv2.arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y),  color=(0, 0, 255), thickness = 1, tipLength = 0.35)
-                # mask = self.arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y), color=(0, 0, 255), thickness=1)
+
 
         return cv2.addWeighted(frame, 0.5, mask, 0.5, 0)
 
     def filter_frame(self,frame):
 
         thresh1, frame = cv2.threshold(frame, 50, 255, cv2.THRESH_TOZERO)
-        frame = cv2.fastNlMeansDenoising(frame, None, 5, 7, 21)
+
+        # frame = cv2.fastNlMeansDenoising(frame, None, 5, 7, 21)
 
         # frame = cv2.bilateralFilter(frame,7, 40, 40)
         # frame = cv2.GaussianBlur(frame, (3,3),0)
 
         return frame
 
-    def filter_magnitude(self,magnitude,median_size=5):
+    def filter_magnitude(self,magnitude,foreground_mask):
 
-        magnitude = cv2.medianBlur(magnitude, median_size)
+        magnitude = cv2.bitwise_and(magnitude, magnitude, mask = foreground_mask)
 
         return magnitude
 
 if __name__ == "__main__":
-    # a_file_path = os.path.join("videos/", "cb1.mp4")
+    a_file_path = os.path.join("videos/", "cb1.mp4")
 
     # a_file_path = os.path.join("videos/", "Drive_640_480_60Hz_a.mp4")
-    a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
+    #a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
 
     # a_file_path = os.path.join("videos/", "HeadingFixed-HD.mp4")
     # a_file_path = os.path.join("videos/", "test_optic_flow.mp4")
 
     source = flow_source(a_file_path)
-    # source.calculate_flow(algorithm='tvl1',visualize_as="vectors",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = 5)
+    source.calculate_flow(algorithm='tvl1',visualize_as="hsv_overlay",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = 5)
     # source.calculate_flow(algorithm='deepflow',visualize_as="vectors",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = False)
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=2, upper_mag_threshold=40, vector_scalar=3)
 
-    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=1, upper_mag_threshold=20,
+    source.calculate_flow(algorithm='tvl1', visualize_as="vectors", lower_mag_threshold=False, upper_mag_threshold=20,
                           vector_scalar=3, save_input_images=False, save_midpoint_images=False)
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_overlay", lower_mag_threshold=2, upper_mag_threshold=40,
