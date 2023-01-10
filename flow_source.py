@@ -119,7 +119,7 @@ class flow_source():
 
         if visualize_as == "vectors":
 
-            image_out = self.visualize_flow_as_vectors(frame, magnitude, angle, 10, vector_scalar = vector_scalar)  # , magnitude_scalar=-1)
+            image_out = self.visualize_flow_as_vectors(frame, magnitude, angle, vector_scalar = vector_scalar)  # , magnitude_scalar=-1)
             frame_out = av.VideoFrame.from_ndarray(image_out, format='bgr24')
 
         elif visualize_as == "hsv_overlay" or visualize_as == "hsv_stacked":
@@ -157,6 +157,7 @@ class flow_source():
         average_fps = container_in.streams.video[0].average_rate
         num_frames = container_in.streams.video[0].frames
 
+
         video_out_name = self.source_file_name + '_' + algorithm + '_' + visualize_as + '.mp4'
 
         ##############################
@@ -164,15 +165,17 @@ class flow_source():
         if os.path.isdir(self.video_out_path) is False:
             os.makedirs(self.video_out_path)
 
-
-        if fps == False:
-            fps = average_fps
-
         container_out = av.open(os.path.join(self.video_out_path, video_out_name), mode="w", timeout = None)
-        stream = container_out.add_stream("libx264", rate=fps)
+        stream = container_out.add_stream("libx264")
         stream.options["crf"] = "20"
         stream.pix_fmt = "yuv420p"
-        # stream.time_base = container_in.streams.video[0].time_base
+
+        if fps == False:
+            stream.time_base = container_in.streams.video[0].time_base
+            stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
+        else:
+            stream.time_base = 1/fps
+            stream.codec_context.time_base = 1/fps
 
         ##############################
         # Prepare for flow calculations
@@ -287,9 +290,7 @@ class flow_source():
             image_out, frame_out = self.convert_flow_to_frame(frame, magnitude, angle, visualize_as, upper_mag_threshold, image_1_gray = image1_gray, vector_scalar = vector_scalar)
 
             if fps is False or fps is None:
-                frame_out.dts = raw_frame.dts
                 frame_out.pts = raw_frame.pts
-                frame_out.time = raw_frame.time
 
             if save_output_images:
 
@@ -355,7 +356,7 @@ class flow_source():
         hsv_8u = np.uint8(hsv)
         return cv2.cvtColor(hsv_8u, cv2.COLOR_HSV2BGR)
 
-    def visualize_flow_as_vectors(self, frame, magnitude, angle, divisor, vector_scalar = 1):
+    def visualize_flow_as_vectors(self, frame, magnitude, angle, divisor=15, vector_scalar = 1):
 
         '''Display image with a visualisation of a flow over the top.
         A divisor controls the density of the quiver plot.'''
@@ -402,7 +403,7 @@ class flow_source():
                 endpoint_x = int(origin_x + vector_x[origin_y, origin_x])
                 endpoint_y = int(origin_y + vector_y[origin_y, origin_x])
 
-                mask = cv2.arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y),  color=(0, 0, 255), thickness = 1, tipLength = 0.35)
+                mask = cv2.arrowedLine(mask, (origin_x, origin_y), (endpoint_x, endpoint_y),  color=(0, 0, 255), thickness = 3, tipLength = 0.35)
 
 
         return cv2.addWeighted(frame, 0.5, mask, 0.5, 0)
@@ -425,22 +426,27 @@ class flow_source():
         return magnitude
 
 if __name__ == "__main__":
-    a_file_path = os.path.join("videos/", "cb1.mp4")
+     # a_file_path = os.path.join("videos/", "cb1.mp4")
+
+    # a_file_path = os.path.join("videos/", "Yoyo-LVRA.mp4")
+    #a_file_path = os.path.join("videos/", "Yoyo-LVRA-Low.mp4")
+
 
     # a_file_path = os.path.join("videos/", "Drive_640_480_60Hz_a.mp4")
-    #a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
+    a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
 
     # a_file_path = os.path.join("videos/", "HeadingFixed-HD.mp4")
     # a_file_path = os.path.join("videos/", "test_optic_flow.mp4")
 
     source = flow_source(a_file_path)
-    source.calculate_flow(algorithm='tvl1',visualize_as="hsv_overlay",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = 5)
-    # source.calculate_flow(algorithm='deepflow',visualize_as="vectors",lower_mag_threshold = 2, upper_mag_threshold = 9, fps = 15, vector_scalar = False)
+    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold = 1, upper_mag_threshold=25,
+                           vector_scalar=3, save_input_images=True, save_output_images=True)
+
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=2, upper_mag_threshold=40, vector_scalar=3)
 
-    source.calculate_flow(algorithm='tvl1', visualize_as="vectors", lower_mag_threshold=False, upper_mag_threshold=20,
-                          vector_scalar=3, save_input_images=False, save_midpoint_images=False)
+    # source.calculate_flow(algorithm='tvl1', visualize_as="vectors", lower_mag_threshold=False, upper_mag_threshold=20,
+    #                       vector_scalar=3, save_input_images=False, save_midpoint_images=False)
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_overlay", lower_mag_threshold=2, upper_mag_threshold=40,
     #                       fps=15, vector_scalar=3)
