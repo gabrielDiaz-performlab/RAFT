@@ -39,14 +39,7 @@ class flow_source():
         self.video_out_path = os.path.join(out_parent_dir, self.source_file_name)
         self.magnitude_out_path = os.path.join(out_parent_dir, self.source_file_name, 'magnitude_data')
 
-
     def generate_mag_histogram(self, mag_image_fileloc, mag_values,bins):
-
-        # pickle_file = open(pickle_loc, 'rb')
-        # mag_dict = pickle.load(pickle_file)
-        #
-        # mag_values = mag_dict['values']
-        # bins = mag_dict['bins']
 
         import matplotlib.pyplot as plt
 
@@ -86,8 +79,6 @@ class flow_source():
             flow_algo = cv2.cuda_OpticalFlowDual_TVL1.create()
             flow_algo.setNumScales(30) # (1/5)^N-1 def: 5
             # flow_algo.setScaleStep(0.7)  #
-
-
             # flow_algo.setLambda(0.5)  # default 0.15. smaller = smoother output.
             # flow_algo.setScaleStep(0.7)  # 0.8 by default. Not well documented.  0.7 did better with dots?
             # flow_algo.setEpsilon(0.005)  # def: 0.01
@@ -170,16 +161,9 @@ class flow_source():
         stream.options["crf"] = "20"
         stream.pix_fmt = "yuv420p"
 
-        # stream.start_time = container_in.streams.video[0].start_time
-        # stream.duration = container_in.streams.video[0].duration
-        # stream.time_base = container_in.streams.video[0].time_base
-
         if fps == False:
             stream.time_base = container_in.streams.video[0].time_base
             stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
-        # else:
-        #     stream.time_base = 1.0/fps
-        #     stream.codec_context.time_base = 1.0/fps
 
         ##############################
         # Prepare for flow calculations
@@ -191,8 +175,8 @@ class flow_source():
         if use_cuda:
             image1_gpu = cv2.cuda_GpuMat()
             image2_gpu = cv2.cuda_GpuMat()
+            foreground_mask_gpu = cv2.cuda_GpuMat()
             clahe = cv2.cuda.createCLAHE(clipLimit=1.0, tileGridSize=(10, 10))
-
         else:
             clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(10, 10))
 
@@ -223,6 +207,7 @@ class flow_source():
                     image2_gpu = clahe.apply(image2_gpu, cv2.cuda_Stream.Null())
 
                 else:
+
                     image2_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
                     image2_gray = clahe.apply(image2_gray)
 
@@ -297,7 +282,10 @@ class flow_source():
 
             if fps is False or fps is None:
                 frame_out.time_base = raw_frame.time_base
-                frame_out.pts = raw_frame.pts
+
+                # frame_out.pts = raw_frame.pts
+                # frame_out.dts = raw_frame.dts
+                # print(raw_frame.dts)
 
             if save_output_images:
 
@@ -308,6 +296,8 @@ class flow_source():
 
             # Add packet to video
             for packet in stream.encode(frame_out):
+                packet.dts = raw_frame.dts
+                packet.pts = raw_frame.pts
                 container_out.mux(packet)
 
         # Flush stream
@@ -433,9 +423,9 @@ class flow_source():
         return magnitude
 
 if __name__ == "__main__":
-     # a_file_path = os.path.join("videos/", "cb1.mp4")
+    a_file_path = os.path.join("videos/", "cb1.mp4")
 
-    a_file_path = os.path.join("videos/", "Yoyo-LVRA.mp4")
+    #a_file_path = os.path.join("videos/", "Yoyo-LVRA.mp4")
     #a_file_path = os.path.join("videos/", "Yoyo-LVRA-Low.mp4")
 
 
@@ -446,7 +436,7 @@ if __name__ == "__main__":
     # a_file_path = os.path.join("videos/", "test_optic_flow.mp4")
 
     source = flow_source(a_file_path)
-    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold = 1, upper_mag_threshold=25,
+    source.calculate_flow(algorithm='tvl1', visualize_as="hsv_overlay", lower_mag_threshold = False, upper_mag_threshold=25,
                            vector_scalar=3, save_input_images=False, save_output_images=False)
 
 
