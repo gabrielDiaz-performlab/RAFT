@@ -167,7 +167,7 @@ class flow_source():
 
         container_out = av.open(os.path.join(self.video_out_path, video_out_name), mode="w", timeout = None)
 
-        stream = container_out.add_stream("libx264")
+        stream = container_out.add_stream("libx264", rate = average_fps)
         stream.options["crf"] = "20"
         stream.pix_fmt = "yuv420p"
         # stream.start_time = container_in.streams.video[0].start_time
@@ -176,10 +176,10 @@ class flow_source():
 
         if fps == False:
             stream.time_base = container_in.streams.video[0].time_base
-            # stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
+            stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
         else:
             stream.time_base = 1.0/fps
-            # stream.codec_context.time_base = 1.0/fps
+            stream.codec_context.time_base = 1.0/fps
 
         ##############################
         # Prepare for flow calculations
@@ -298,7 +298,7 @@ class flow_source():
 
             # print(raw_frame.time)
             # if fps is False or fps is None:
-            #     frame_out.pts = raw_frame.pts
+            # frame_out.pts = raw_frame.pts
 
             if save_output_images:
 
