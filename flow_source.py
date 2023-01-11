@@ -166,16 +166,20 @@ class flow_source():
             os.makedirs(self.video_out_path)
 
         container_out = av.open(os.path.join(self.video_out_path, video_out_name), mode="w", timeout = None)
+
         stream = container_out.add_stream("libx264")
         stream.options["crf"] = "20"
         stream.pix_fmt = "yuv420p"
+        # stream.start_time = container_in.streams.video[0].start_time
+        # stream.duration = container_in.streams.video[0].duration
+        # stream.time_base = container_in.streams.video[0].time_base
 
         if fps == False:
             stream.time_base = container_in.streams.video[0].time_base
-            stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
+            # stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
         else:
-            stream.time_base = 1/fps
-            stream.codec_context.time_base = 1/fps
+            stream.time_base = 1.0/fps
+            # stream.codec_context.time_base = 1.0/fps
 
         ##############################
         # Prepare for flow calculations
@@ -194,10 +198,13 @@ class flow_source():
 
         background_subtractor = cv2.createBackgroundSubtractorKNN()
 
+        first_pts = []
+
         for raw_frame in tqdm(container_in.decode(video=0), desc="Generating " + video_out_name, unit= 'frames',total = num_frames):
 
             if raw_frame.index == 0:
 
+                first_pts = raw_frame.pts
                 stream.width = raw_frame.width
 
                 if visualize_as == "hsv_stacked":
@@ -230,6 +237,7 @@ class flow_source():
                 continue
 
             else:
+
                 frame = raw_frame.to_ndarray(format='bgr24')
                 frame = self.filter_frame(frame)
                 foreground_mask = background_subtractor.apply(frame)
@@ -240,7 +248,6 @@ class flow_source():
                     os.makedirs(self.raw_frames_out_path)
 
                 raw_frame.to_image().save(os.path.join(self.raw_frames_out_path, '{:06d}.png'.format(raw_frame.index)))
-
 
             # Calculate flow.  If possible, use cuda.
             if use_cuda:
@@ -289,8 +296,9 @@ class flow_source():
             # Convert flow to visualization
             image_out, frame_out = self.convert_flow_to_frame(frame, magnitude, angle, visualize_as, upper_mag_threshold, image_1_gray = image1_gray, vector_scalar = vector_scalar)
 
-            if fps is False or fps is None:
-                frame_out.pts = raw_frame.pts
+            # print(raw_frame.time)
+            # if fps is False or fps is None:
+            #     frame_out.pts = raw_frame.pts
 
             if save_output_images:
 
@@ -428,19 +436,19 @@ class flow_source():
 if __name__ == "__main__":
      # a_file_path = os.path.join("videos/", "cb1.mp4")
 
-    # a_file_path = os.path.join("videos/", "Yoyo-LVRA.mp4")
+    a_file_path = os.path.join("videos/", "Yoyo-LVRA.mp4")
     #a_file_path = os.path.join("videos/", "Yoyo-LVRA-Low.mp4")
 
 
     # a_file_path = os.path.join("videos/", "Drive_640_480_60Hz_a.mp4")
-    a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
+    #a_file_path = os.path.join("videos/", "yoyo_640_480_60hz_2.mp4")
 
     # a_file_path = os.path.join("videos/", "HeadingFixed-HD.mp4")
     # a_file_path = os.path.join("videos/", "test_optic_flow.mp4")
 
     source = flow_source(a_file_path)
     source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold = 1, upper_mag_threshold=25,
-                           vector_scalar=3, save_input_images=True, save_output_images=True)
+                           vector_scalar=3, save_input_images=False, save_output_images=False)
 
 
     # source.calculate_flow(algorithm='tvl1', visualize_as="hsv_stacked", lower_mag_threshold=2, upper_mag_threshold=40, vector_scalar=3)
