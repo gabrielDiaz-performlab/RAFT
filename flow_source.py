@@ -166,10 +166,10 @@ class flow_source():
             os.makedirs(self.video_out_path)
 
         container_out = av.open(os.path.join(self.video_out_path, video_out_name), mode="w", timeout = None)
-
-        stream = container_out.add_stream("libx264", rate = average_fps)
+        stream = container_out.add_stream("libx264", framerate = average_fps)
         stream.options["crf"] = "20"
         stream.pix_fmt = "yuv420p"
+
         # stream.start_time = container_in.streams.video[0].start_time
         # stream.duration = container_in.streams.video[0].duration
         # stream.time_base = container_in.streams.video[0].time_base
@@ -177,9 +177,9 @@ class flow_source():
         if fps == False:
             stream.time_base = container_in.streams.video[0].time_base
             stream.codec_context.time_base = container_in.streams.video[0].codec_context.time_base
-        else:
-            stream.time_base = 1.0/fps
-            stream.codec_context.time_base = 1.0/fps
+        # else:
+        #     stream.time_base = 1.0/fps
+        #     stream.codec_context.time_base = 1.0/fps
 
         ##############################
         # Prepare for flow calculations
@@ -204,7 +204,6 @@ class flow_source():
 
             if raw_frame.index == 0:
 
-                first_pts = raw_frame.pts
                 stream.width = raw_frame.width
 
                 if visualize_as == "hsv_stacked":
@@ -296,9 +295,9 @@ class flow_source():
             # Convert flow to visualization
             image_out, frame_out = self.convert_flow_to_frame(frame, magnitude, angle, visualize_as, upper_mag_threshold, image_1_gray = image1_gray, vector_scalar = vector_scalar)
 
-            # print(raw_frame.time)
-            # if fps is False or fps is None:
-            # frame_out.pts = raw_frame.pts
+            if fps is False or fps is None:
+                frame_out.time_base = raw_frame.time_base
+                frame_out.pts = raw_frame.pts
 
             if save_output_images:
 
